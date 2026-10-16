@@ -17,7 +17,7 @@ BINARY = os.environ.get(
 class SessionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.claude = self.root / "claude"
         self.claw = self.root / "claw"
         self.env = dict(
@@ -44,7 +44,7 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         return result
 
-    def source(self, tool, sid=None):
+    def source(self, tool, sid=None, cwd="/hoge/fuga"):
         sid = sid or str(uuid4())
         messages = [
             dict(
@@ -66,14 +66,14 @@ class SessionTests(unittest.TestCase):
             path = self.claw / "sessions" / f"{sid}.json"
             payload = {
                 "session_id": sid,
-                "cwd": "/hoge/fuga",
+                "cwd": cwd,
                 "provider": "synthetic",
                 "custom_state": {"keep": True},
                 "conversation": {"messages": messages, "max_history": 2000},
             }
             data = json.dumps(payload).encode()
         else:
-            path = self.claude / "projects" / "-hoge-fuga" / f"{sid}.jsonl"
+            path = self.claude / "projects" / cwd.replace("/", "-") / f"{sid}.jsonl"
             rows = []
             for index, message in enumerate(messages):
                 rows.append(
@@ -83,7 +83,7 @@ class SessionTests(unittest.TestCase):
                         timestamp=STAMP,
                         parentUuid=None if index == 0 else "u1",
                         sessionId=sid,
-                        cwd="/hoge/fuga",
+                        cwd=cwd,
                         unknown_field={"keep": True},
                         message={
                             "role": message["role"],
@@ -106,6 +106,71 @@ class SessionTests(unittest.TestCase):
         self.assertEqual({row["id"] for row in result}, {a, b})
         self.assertEqual({row["cwd"] for row in result}, {"/hoge/fuga"})
         self.assertEqual(len(self.run_cli("list", "--from", "claude")["sessions"]), 1)
+
+    def test_list_directory_matches_saved_cwd_exactly_for_both_tools(self):
+        wanted = {}
+        for tool in ("claude", "clawcodex"):
+            wanted[tool], _, _ = self.source(tool)
+            for cwd in ("/hoge/fuga/child", "/hoge/fuga-other", "/hoge-fuga"):
+                self.source(tool, cwd=cwd)
+        result = self.run_cli("list", "/hoge/fuga")["sessions"]
+        self.assertEqual({row["id"] for row in result}, set(wanted.values()))
+        for tool, sid in wanted.items():
+            result = self.run_cli("list", "/hoge/fuga", "--from", tool)["sessions"]
+            self.assertEqual(result, [{"id": sid, "tool": tool, "cwd": "/hoge/fuga"}])
+
+    def test_list_directory_accepts_relative_paths_without_existing_directory(self):
+        cwd = str(self.root / "missing" / "project with spaces")
+        wanted = {self.source(tool, cwd=cwd)[0] for tool in ("claude", "clawcodex")}
+        self.assertFalse(Path(cwd).exists())
+        for directory in (
+            cwd,
+            cwd + "/",
+            cwd + "/./",
+            "missing/project with spaces",
+            "./missing/other/../project with spaces",
+        ):
+            with self.subTest(directory=directory):
+                result = self.run_cli("list", directory)["sessions"]
+                self.assertEqual({row["id"] for row in result}, wanted)
+                self.assertEqual({row["cwd"] for row in result}, {cwd})
+        self.assertFalse(Path(cwd).exists())
+
+    def test_list_dot_matches_current_directory(self):
+        wanted = {
+            self.source(tool, cwd=str(self.root))[0]
+            for tool in ("claude", "clawcodex")
+        }
+        self.source("claude")
+        result = self.run_cli("list", ".")["sessions"]
+        self.assertEqual({row["id"] for row in result}, wanted)
+
+    def test_list_directory_normalizes_saved_cwd(self):
+        cwd = str(self.root) + "/old/../project/./"
+        wanted = {self.source(tool, cwd=cwd)[0] for tool in ("claude", "clawcodex")}
+        result = self.run_cli("list", "project")["sessions"]
+        self.assertEqual({row["id"] for row in result}, wanted)
+
+    def test_list_directory_does_not_resolve_symbolic_links(self):
+        directory = self.root / "project"
+        directory.mkdir()
+        link = self.root / "link"
+        link.symlink_to(directory, target_is_directory=True)
+        for tool in ("claude", "clawcodex"):
+            original, _, _ = self.source(tool, cwd=str(directory))
+            alias, _, _ = self.source(tool, cwd=str(link))
+            for path, expected in ((directory, original), (link, alias)):
+                result = self.run_cli("list", str(path), "--from", tool)["sessions"]
+                self.assertEqual([row["id"] for row in result], [expected])
+
+    def test_list_directory_without_matches_returns_empty_list(self):
+        self.source("claude")
+        self.source("clawcodex")
+        self.assertEqual(self.run_cli("list", "/other"), {"sessions": []})
+
+    def test_list_rejects_empty_directory_or_extra_arguments(self):
+        self.run_cli("list", "", success=False)
+        self.run_cli("list", "/hoge", "/fuga", success=False)
 
     def test_convert_by_id_registers_under_original_project(self):
         sid, path, raw = self.source("clawcodex")

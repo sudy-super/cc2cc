@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -103,7 +103,23 @@ pub fn find(id: &str, format: &str) -> Result<PathBuf> {
     }
 }
 
-pub fn list(format: Option<&str>) -> Result<Value> {
+fn normalize_directory(path: &Path) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    // 履歴に残る削除済みのディレクトリも照合するため、ファイルシステムを参照しない。
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    Ok(normalized)
+}
+
+pub fn list(format: Option<&str>, directory: Option<&Path>) -> Result<Value> {
+    let directory = directory.map(normalize_directory).transpose()?;
     let formats = match format {
         Some("claude") => vec!["claude"],
         Some("clawcodex") => vec!["clawcodex"],
@@ -113,7 +129,7 @@ pub fn list(format: Option<&str>) -> Result<Value> {
     let mut sessions = Vec::new();
     for format in formats {
         for path in paths(format)? {
-            if format == "claude" {
+            let (id, cwd) = if format == "claude" {
                 let id = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -132,13 +148,20 @@ pub fn list(format: Option<&str>) -> Result<Value> {
                         break;
                     }
                 }
-                if !cwd.is_empty() {
-                    sessions.push(json!({"id":id,"tool":format,"cwd":cwd}));
+                if cwd.is_empty() {
+                    continue;
                 }
+                (id.to_owned(), cwd)
             } else {
                 let session = load_session(&path, format)?;
-                sessions.push(json!({"id":session.session_id,"tool":format,"cwd":session.cwd}));
+                (session.session_id, session.cwd)
+            };
+            if let Some(directory) = &directory
+                && normalize_directory(Path::new(&cwd))? != *directory
+            {
+                continue;
             }
+            sessions.push(json!({"id":id,"tool":format,"cwd":cwd}));
         }
     }
     Ok(json!({"sessions":sessions}))

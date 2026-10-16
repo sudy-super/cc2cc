@@ -1,5 +1,6 @@
 use cc2cc::sessions;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(version, about = "Claude CodeとClawCodexの会話履歴を変換します")]
@@ -12,6 +13,8 @@ struct Cli {
 enum Command {
     /// 保存されているセッションを一覧表示する
     List {
+        /// この作業ディレクトリの会話だけを表示する (省略時は全件)
+        directory: Option<PathBuf>,
         #[arg(long = "from", value_parser = ["claude", "clawcodex"])]
         tool: Option<String>,
     },
@@ -36,7 +39,7 @@ enum Command {
 
 fn main() {
     let result = match Cli::parse().command {
-        Command::List { tool } => sessions::list(tool.as_deref()),
+        Command::List { directory, tool } => sessions::list(tool.as_deref(), directory.as_deref()),
         Command::Convert {
             session_id,
             target,

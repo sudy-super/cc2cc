@@ -9,6 +9,7 @@ Use the installed `cc2cc` command. Do not ask the user for a transcript path or 
 
 - If the user has supplied the source session ID and destination, run `cc2cc convert SESSION_ID --to claude` or `cc2cc convert SESSION_ID --to clawcodex`.
 - If the ID is missing, run `cc2cc list` (or `cc2cc list --from claude` / `--from clawcodex`) and help the user select the session. Use the tool name and original working directory to distinguish sessions. Ask only when the intended session is ambiguous.
+- When the user identifies a working directory, use `cc2cc list DIRECTORY`; use `cc2cc list .` for the current directory. This matches the saved working directory exactly, excluding subdirectories, and can be combined with `--from`. Relative paths are accepted, and the directory need not still exist. Paths are compared without resolving symbolic links.
 - Conversion also registers the new history in the destination tool. Keep the source session's working directory; do not substitute the current directory.
 - Read the JSON result. Report the new `session_id`, `cwd`, and `resume` command. For ClawCodex, start it in `cwd` and enter the returned `/resume ID` command. For Claude Code, use the returned command directly.
 - `cc2cc verify NEW_SESSION_ID` checks the saved original and the converted conversation. `--dry-run` on `convert` validates without writing.
