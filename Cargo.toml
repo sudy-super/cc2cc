@@ -1,0 +1,33 @@
+[package]
+name = "cc2cc"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+rust-version = "1.90"
+description = "Archive-preserving bidirectional Claude Code / ClawCodex session converter"
+license = "MIT"
+authors = ["sudy-super"]
+repository = "https://github.com/sudy-super/cc2cc"
+readme = "README.md"
+exclude = ["tasks/", ".DS_Store"]
+
+[[example]]
+name = "core-driver"
+path = "tests/driver/main.rs"
+
+[dependencies]
+anyhow = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

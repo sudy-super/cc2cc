@@ -1,0 +1,90 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy --target '${{ matrix.target }}'
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Check version
+        run: |
+          version=$(cargo +1.90.0 metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$RELEASE_TAG" = "v$version"
+      - name: Check formatting
+        run: cargo +1.90.0 fmt --check
+      - name: Rust tests
+        run: cargo +1.90.0 test --locked
+      - name: Clippy
+        run: cargo +1.90.0 clippy --locked --all-targets -- -D warnings
+      - name: Build test driver
+        run: cargo +1.90.0 build --locked --examples
+      - name: Build release binary
+        run: cargo +1.90.0 build --locked --release --target '${{ matrix.target }}' --bin cc2cc
+      - name: Test release binary and installer
+        env:
+          CC2CC_BIN: ${{ github.workspace }}/target/${{ matrix.target }}/release/cc2cc
+        run: |
+          "$CC2CC_BIN" --version
+          python3 -m unittest discover -s tests -v
+      - name: Package
+        run: sh scripts/package-release.sh '${{ matrix.target }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cc2cc-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: cc2cc-*
+          path: dist
+          merge-multiple: true
+      - name: Prepare assets
+        run: |
+          cp install.sh dist/install.sh
+          cd dist
+          test -f cc2cc-aarch64-apple-darwin.tar.gz
+          test -f cc2cc-x86_64-unknown-linux-musl.tar.gz
+          sha256sum ./*.tar.gz install.sh | sed 's|  ./|  |' > SHA256SUMS
+      - name: Publish draft after both builds succeed
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "cc2cc $RELEASE_TAG" --notes-file docs/release-notes.md dist/*.tar.gz dist/SHA256SUMS dist/install.sh
+          gh release edit "$RELEASE_TAG" --draft=false --latest

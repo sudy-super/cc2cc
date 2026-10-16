@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +1.90.0 fmt --check
+      - name: Rust tests
+        run: cargo +1.90.0 test --locked
+      - name: Clippy
+        run: cargo +1.90.0 clippy --locked --all-targets -- -D warnings
+      - name: Build CLI and test driver
+        run: cargo +1.90.0 build --locked --bin cc2cc --examples
+      - name: CLI and installer tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Check shell scripts
+        run: sh -n install.sh scripts/package-release.sh
