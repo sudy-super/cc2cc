@@ -278,15 +278,20 @@ class BridgeTests(unittest.TestCase):
             (self.root / "restore/native/transcript.jsonl").read_bytes(), original
         )
 
-    def test_branch_requires_explicit_leaf_and_other_branch_is_archived(self):
+    def test_branch_defaults_to_last_on_ties_and_other_branch_is_archived(self):
         records = [
             claude_record("u", None, "user", "question"),
             claude_record("a-left", "u", "assistant", "left"),
             claude_record("a-right", "u", "assistant", "right"),
         ]
         source = self.claude(records)
-        with self.assertRaises(BridgeError):
-            self.forward(source)
+        automatic, native = self.forward(source)
+        self.assertEqual(
+            [r["uuid"] for r in read(native)["conversation"]["messages"]],
+            ["u", "a-right"],
+        )
+        report = convert(automatic, "claude", self.root / "automatic-restore")
+        self.assertEqual(Path(report["native_path"]).read_bytes(), source.read_bytes())
         bundle = self.root / "selected"
         report = convert(
             source, "clawcodex", bundle, source_format="claude", leaf="a-left"
@@ -303,6 +308,157 @@ class BridgeTests(unittest.TestCase):
             (self.root / "restore/native" / source.name).read_bytes(),
             source.read_bytes(),
         )
+
+    def test_latest_branch_is_selected_and_appended_messages_return_to_it(self):
+        source = self.claude(
+            [
+                claude_record("u", None, "user", "question"),
+                claude_record(
+                    "latest",
+                    "u",
+                    "assistant",
+                    "latest",
+                    timestamp="2026-10-16T00:00:03Z",
+                ),
+                claude_record(
+                    "older", "u", "assistant", "older", timestamp="2026-10-16T00:00:02Z"
+                ),
+                claude_record(
+                    "sidechain",
+                    "u",
+                    "assistant",
+                    "sidechain",
+                    isSidechain=True,
+                    timestamp="2030-01-01T00:00:00Z",
+                ),
+                {
+                    "type": "future-event",
+                    "uuid": "event",
+                    "timestamp": "2030-01-01T00:00:00Z",
+                },
+            ]
+        )
+        original = source.read_bytes()
+        bundle, native = self.forward(source)
+        data = read(native)
+        self.assertEqual(
+            [r["uuid"] for r in data["conversation"]["messages"]], ["u", "latest"]
+        )
+        self.assertEqual(read(bundle / "manifest.json")["source_leaf"], "latest")
+        data["conversation"]["messages"].extend(
+            [
+                claw_record(
+                    "follow-u", "user", "follow-up", timestamp="2026-10-16T00:00:04Z"
+                ),
+                claw_record(
+                    "follow-a", "assistant", "answer", timestamp="2026-10-16T00:00:05Z"
+                ),
+            ]
+        )
+        native.write_bytes(encode(data))
+        self.assertTrue(verify(bundle)["ok"])
+        restored = self.root / "latest-restore"
+        report = convert(bundle, "claude", restored)
+        restored_bytes = Path(report["native_path"]).read_bytes()
+        self.assertTrue(restored_bytes.startswith(original))
+        rows = [json.loads(line) for line in restored_bytes.splitlines()]
+        self.assertEqual(rows[-2]["parentUuid"], "latest")
+        self.assertEqual(rows[-1]["parentUuid"], "follow-u")
+        self.assertEqual(read(restored / "manifest.json")["target_leaf"], "follow-a")
+        self.assertTrue(verify(restored)["ok"])
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_latest_appended_claude_branch_returns_to_claw_and_archives_others(self):
+        source = self.claw(
+            records=[
+                claw_record("c1", "user", "question"),
+                claw_record("c2", "assistant", "answer"),
+            ]
+        )
+        bundle, native = self.forward(source, "clawcodex")
+        baseline = [json.loads(line) for line in native.read_bytes().splitlines()]
+        parent = baseline[-1]["uuid"]
+        extra = [
+            claude_record(
+                "new-u",
+                parent,
+                "user",
+                "latest question",
+                sessionId=TARGET_ID,
+                timestamp="2026-10-16T00:00:04Z",
+            ),
+            claude_record(
+                "new-a",
+                "new-u",
+                "assistant",
+                "latest answer",
+                sessionId=TARGET_ID,
+                timestamp="2026-10-16T00:00:05Z",
+            ),
+            claude_record(
+                "old-u",
+                parent,
+                "user",
+                "older question",
+                sessionId=TARGET_ID,
+                timestamp="2026-10-16T00:00:02Z",
+            ),
+            claude_record(
+                "old-a",
+                "old-u",
+                "assistant",
+                "older answer",
+                sessionId=TARGET_ID,
+                timestamp="2026-10-16T00:00:03Z",
+            ),
+        ]
+        with native.open("ab") as stream:
+            stream.write(jsonl(extra))
+        original = native.read_bytes()
+        self.assertEqual(verify(bundle)["appended_messages"], 4)
+        restored = self.root / "restore-latest-branch"
+        report = convert(bundle, "clawcodex", restored)
+        messages = read(Path(report["native_path"]))["conversation"]["messages"]
+        self.assertEqual([r["uuid"] for r in messages], ["c1", "c2", "new-u", "new-a"])
+        self.assertEqual((restored / "archive" / native.name).read_bytes(), original)
+        self.assertTrue(verify(restored)["ok"])
+        installed = install(
+            restored, home=self.root / "latest-home", session_id=INSTALL_ID
+        )
+        self.assertEqual(
+            read(Path(installed["path"]))["conversation"]["messages"][-1]["content"],
+            "latest answer",
+        )
+
+    def test_appended_branch_before_imported_tail_is_rejected(self):
+        source = self.claw(
+            records=[
+                claw_record("c1", "user", "question"),
+                claw_record("c2", "assistant", "answer"),
+            ]
+        )
+        original = source.read_bytes()
+        bundle, native = self.forward(source, "clawcodex")
+        baseline = [json.loads(line) for line in native.read_bytes().splitlines()]
+        with native.open("ab") as stream:
+            stream.write(
+                jsonl(
+                    [
+                        claude_record(
+                            "fork",
+                            baseline[0]["uuid"],
+                            "assistant",
+                            "fork",
+                            sessionId=TARGET_ID,
+                            timestamp="2026-10-16T00:01:00Z",
+                        )
+                    ]
+                )
+            )
+        with self.assertRaises(BridgeError):
+            convert(bundle, "clawcodex", self.root / "invalid-fork")
+        self.assertFalse((self.root / "invalid-fork").exists())
+        self.assertEqual(source.read_bytes(), original)
 
     def test_claw_normal_resave_restores_original_rich_attributes(self):
         source = self.claude()
@@ -974,14 +1130,17 @@ class BridgeTests(unittest.TestCase):
             [
                 claude_record("u", None, "user", "質問"),
                 claude_record("left", "u", "assistant", "左"),
-                claude_record("right", "u", "assistant", "右"),
+                claude_record(
+                    "right", "u", "assistant", "右", timestamp="2026-10-16T00:01:00Z"
+                ),
             ]
         )
         bundle = self.root / "branched-forward"
-        convert(source, "clawcodex", bundle, source_format="claude", leaf="right")
+        convert(source, "clawcodex", bundle, source_format="claude", leaf="left")
         restored = self.root / "restored-branches"
         report = convert(bundle, "claude", restored)
         self.assertEqual(Path(report["native_path"]).read_bytes(), source.read_bytes())
+        self.assertEqual(read(restored / "manifest.json")["target_leaf"], "left")
         self.assertTrue(verify(restored)["ok"])
         registered = install(
             restored, home=self.root / "branch-home", session_id=INSTALL_ID

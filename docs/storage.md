@@ -142,6 +142,9 @@ JSONライブラリの予約キー `$serde_json::private::Number` は、オブ�
 
 ローカルの履歴では型とキーだけを調べ、attachmentにもuuid/parentUuidがあること、renderedの配列に再開用の文脈が含まれること、systemにlogicalParentUuid/compactMetadataがあることを確認した。
 分岐の末端判定にはlogicalParentUuidも参照するが、圧縮前の内容をAPI向け会話へ再注入しないため、実際の会話列はparentUuidだけでたどる。
+複数の分岐がある場合は、末尾メッセージの日時が最も新しい分岐を自動で選ぶ。
+日時が同じ場合は、ファイル内で末尾メッセージが後ろに記録された分岐を選ぶ。
+別の分岐を使う場合は `--leaf UUID` で指定できる。
 別分岐、圧縮前の行、独自イベントは原本に残す。
 UUID重複や解決できない参照は、推測で結合せず停止する。
 

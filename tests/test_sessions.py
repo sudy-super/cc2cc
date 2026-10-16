@@ -138,8 +138,7 @@ class SessionTests(unittest.TestCase):
 
     def test_list_dot_matches_current_directory(self):
         wanted = {
-            self.source(tool, cwd=str(self.root))[0]
-            for tool in ("claude", "clawcodex")
+            self.source(tool, cwd=str(self.root))[0] for tool in ("claude", "clawcodex")
         }
         self.source("claude")
         result = self.run_cli("list", ".")["sessions"]
@@ -185,6 +184,30 @@ class SessionTests(unittest.TestCase):
             result["session_id"],
             {row["id"] for row in self.run_cli("list")["sessions"]},
         )
+
+    def test_convert_by_id_automatically_selects_latest_branch(self):
+        sid, path, _ = self.source("claude")
+        rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+        rows[1]["timestamp"] = "2026-10-16T00:00:02Z"
+        alternative = dict(
+            rows[1], uuid="alternative", timestamp="2026-10-16T00:00:01Z"
+        )
+        alternative["message"] = {"role": "assistant", "content": "older answer"}
+        rows.append(alternative)
+        path.write_text("\n".join(json.dumps(row) for row in rows))
+        result = self.run_cli("convert", sid, "--to", "clawcodex")
+        messages = json.loads(Path(result["path"]).read_bytes())["conversation"][
+            "messages"
+        ]
+        self.assertEqual([r["uuid"] for r in messages], ["u1", "a1"])
+        self.assertTrue(any("a1" in note for note in result["warnings"]))
+        selected = self.run_cli(
+            "convert", sid, "--to", "clawcodex", "--leaf", "alternative"
+        )
+        messages = json.loads(Path(selected["path"]).read_bytes())["conversation"][
+            "messages"
+        ]
+        self.assertEqual([r["uuid"] for r in messages], ["u1", "alternative"])
 
     def test_roundtrip_preserves_unknown_claude_fields_and_events(self):
         sid, path, raw = self.source("claude")

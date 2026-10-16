@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail, ensure};
-use chrono::{DateTime, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -286,26 +286,29 @@ pub fn select_claude(records: &[Value], leaf: Option<&str>) -> Result<(Vec<Value
         }
     }
     let leaves: Vec<_> = order.iter().filter(|uid| !parents.contains(*uid)).collect();
+    let automatic = leaf.is_none() && leaves.len() > 1;
     let leaf = match leaf {
         Some(leaf) => leaf.to_owned(),
-        None => {
-            ensure!(
-                leaves.len() == 1,
-                "会話の分岐を--leafで指定してください: {}",
-                leaves
-                    .iter()
-                    .map(|uid| uid.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            leaves[0].clone()
-        }
+        None => leaves
+            .iter()
+            .map(|uid| {
+                let time = string(nodes[*uid], "timestamp")
+                    .and_then(timestamp_datetime)
+                    .with_context(|| format!("分岐の末端{uid}の日時が不正です"))?;
+                Ok((time, *uid))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max_by_key(|(time, _)| *time)
+            .context("会話の末端がありません。親メッセージの参照を確認してください")?
+            .1
+            .clone(),
     };
     ensure!(
         nodes.contains_key(&leaf),
         "指定した--leafが会話にありません"
     );
-    let mut cursor = Some(leaf);
+    let mut cursor = Some(leaf.clone());
     let mut visited = BTreeSet::new();
     let mut chain = Vec::new();
     while let Some(uid) = cursor {
@@ -318,13 +321,15 @@ pub fn select_claude(records: &[Value], leaf: Option<&str>) -> Result<(Vec<Value
     }
     chain.reverse();
     let excluded = records.len() - chain.len();
-    let warnings = if excluded == 0 {
-        Vec::new()
-    } else {
-        vec![format!(
-            "選択した会話以外の{excluded}件 (別分岐・独自イベント等)は原本に保存しました"
-        )]
-    };
+    let mut warnings = Vec::new();
+    if automatic {
+        warnings.push(format!("最も新しい分岐を選択しました (末端UUID: {leaf})"));
+    }
+    if excluded > 0 {
+        warnings.push(format!(
+            "選択した会話以外の{excluded}件 (別分岐、独自イベントなど)は原本に保存しました"
+        ));
+    }
     Ok((chain, warnings))
 }
 
@@ -571,15 +576,13 @@ pub fn validate_messages(records: &[Value], format: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn timestamp_seconds(value: &str) -> Result<f64> {
+fn timestamp_datetime(value: &str) -> Result<DateTime<Utc>> {
     if let Ok(time) = DateTime::parse_from_rfc3339(value) {
         ensure!(
             time.timestamp_subsec_nanos() < 1_000_000_000,
             "うるう秒のtimestampには対応していません"
         );
-        return Ok(
-            time.timestamp() as f64 + f64::from(time.timestamp_subsec_nanos()) / 1_000_000_000.0
-        );
+        return Ok(time.to_utc());
     }
     for format in [
         "%Y-%m-%dT%H:%M:%S%.f",
@@ -592,18 +595,21 @@ pub fn timestamp_seconds(value: &str) -> Result<f64> {
                 time.and_utc().timestamp_subsec_nanos() < 1_000_000_000,
                 "うるう秒のtimestampには対応していません"
             );
-            return Ok(time.and_utc().timestamp() as f64
-                + f64::from(time.and_utc().timestamp_subsec_nanos()) / 1_000_000_000.0);
+            return Ok(time.and_utc());
         }
     }
     if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return Ok(date
             .and_hms_opt(0, 0, 0)
             .context("不正なtimestampです")?
-            .and_utc()
-            .timestamp() as f64);
+            .and_utc());
     }
     bail!("不正なtimestampです")
+}
+
+pub fn timestamp_seconds(value: &str) -> Result<f64> {
+    let time = timestamp_datetime(value)?;
+    Ok(time.timestamp() as f64 + f64::from(time.timestamp_subsec_nanos()) / 1_000_000_000.0)
 }
 
 pub fn build_files(
@@ -663,26 +669,103 @@ mod tests {
     use super::*;
 
     #[test]
-    fn branches_require_choice_and_logical_parent_changes_leaf_detection() {
+    fn branches_default_to_last_on_ties_and_logical_parent_changes_leaf_detection() {
         let branches = vec![
-            json!({"type":"user","uuid":"root","parentUuid":null}),
-            json!({"type":"assistant","uuid":"a","parentUuid":"root"}),
-            json!({"type":"assistant","uuid":"b","parentUuid":"root"}),
+            json!({"type":"user","uuid":"root","parentUuid":null,"timestamp":"2026-10-16T00:00:00Z"}),
+            json!({"type":"assistant","uuid":"a","parentUuid":"root","timestamp":"2026-10-16T00:00:00Z"}),
+            json!({"type":"assistant","uuid":"b","parentUuid":"root","timestamp":"2026-10-16T00:00:00Z"}),
         ];
-        assert!(select_claude(&branches, None).is_err());
-        let (selected, warnings) = select_claude(&branches, Some("b")).unwrap();
+        let (selected, warnings) = select_claude(&branches, None).unwrap();
         assert_eq!(selected.len(), 2);
         assert_eq!(selected[1]["uuid"], "b");
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings.len(), 2);
+        assert_eq!(
+            select_claude(&branches, Some("a")).unwrap().0[1]["uuid"],
+            "a"
+        );
         let compacted = vec![
             branches[0].clone(),
             json!({"type":"system","uuid":"compact",
-            "parentUuid":null,"logicalParentUuid":"root"}),
+            "parentUuid":null,"logicalParentUuid":"root","timestamp":"2026-10-16T00:00:00Z"}),
         ];
         assert_eq!(
             select_claude(&compacted, None).unwrap().0[0]["uuid"],
             "compact"
         );
+    }
+
+    #[test]
+    fn branches_compare_instants_without_losing_fractional_seconds() {
+        for (left, right, expected) in [
+            ("2026-10-16T00:01:00Z", "2026-10-16T00:00:00Z", "z-left"),
+            (
+                "2026-10-16T00:30:00Z",
+                "2026-10-16T09:00:00+09:00",
+                "z-left",
+            ),
+            (
+                "2026-10-16T00:00:00.000000002Z",
+                "2026-10-16T00:00:00.000000001Z",
+                "z-left",
+            ),
+            (
+                "2026-10-16T00:00:00Z",
+                "2026-10-16T09:00:00+09:00",
+                "a-right",
+            ),
+        ] {
+            let records = vec![
+                json!({"type":"user","uuid":"root","parentUuid":null}),
+                json!({"type":"assistant","uuid":"z-left","parentUuid":"root","timestamp":left}),
+                json!({"type":"assistant","uuid":"a-right","parentUuid":"root","timestamp":right}),
+            ];
+            assert_eq!(
+                select_claude(&records, None).unwrap().0[1]["uuid"],
+                expected
+            );
+            assert_eq!(
+                select_claude(&records, Some("z-left")).unwrap().0[1]["uuid"],
+                "z-left"
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_branch_selection_rejects_missing_or_invalid_timestamps() {
+        for invalid in [
+            Value::Null,
+            json!(123),
+            json!("invalid"),
+            json!("2016-12-31T23:59:60Z"),
+        ] {
+            let mut records = vec![
+                json!({"type":"user","uuid":"root","parentUuid":null}),
+                json!({"type":"assistant","uuid":"bad","parentUuid":"root","timestamp":invalid}),
+                json!({"type":"assistant","uuid":"valid","parentUuid":"root","timestamp":"2026-10-16T00:00:00Z"}),
+            ];
+            if records[1]["timestamp"].is_null() {
+                records[1].as_object_mut().unwrap().remove("timestamp");
+            }
+            let error = select_claude(&records, None).unwrap_err();
+            assert!(error.to_string().contains("末端bad"));
+            assert!(select_claude(&records, Some("valid")).is_ok());
+        }
+    }
+
+    #[test]
+    fn automatic_branch_selection_rejects_cycles_and_broken_latest_branch() {
+        let cycle = vec![
+            json!({"type":"user","uuid":"a","parentUuid":"b"}),
+            json!({"type":"assistant","uuid":"b","parentUuid":"a"}),
+        ];
+        assert!(select_claude(&cycle, None).is_err());
+        assert!(select_claude(&cycle, Some("a")).is_err());
+        let records = vec![
+            json!({"type":"user","uuid":"root","parentUuid":null}),
+            json!({"type":"assistant","uuid":"older","parentUuid":"root","timestamp":"2026-10-16T00:00:00Z"}),
+            json!({"type":"assistant","uuid":"newer","parentUuid":"missing","timestamp":"2026-10-16T00:01:00Z"}),
+        ];
+        assert!(select_claude(&records, None).is_err());
     }
 
     #[test]

@@ -13,7 +13,7 @@ Use the installed `cc2cc` command. Do not ask the user for a transcript path or 
 - Conversion also registers the new history in the destination tool. Keep the source session's working directory; do not substitute the current directory.
 - Read the JSON result. Report the new `session_id`, `cwd`, and `resume` command. For ClawCodex, start it in `cwd` and enter the returned `/resume ID` command. For Claude Code, use the returned command directly.
 - `cc2cc verify NEW_SESSION_ID` checks the saved original and the converted conversation. `--dry-run` on `convert` validates without writing.
-- If a Claude conversation has multiple branches, use `--leaf UUID` only after identifying which branch the user wants. Do not guess or silently combine branches.
+- Claude conversations with multiple branches automatically use the branch with the newest terminal message timestamp; ties use the last recorded branch. Do not ask the user to choose a branch unless they request a different one, in which case use `--leaf UUID`. Other branches remain archived, and original restoration preserves the recorded branch choice.
 
 Source files are never overwritten. The command stores originals and restores supported metadata when converting back, including appended messages. Do not claim that every field is understood by the destination model, that a running tool or agent was migrated, or that a successful conversion proves an API request will succeed.
 

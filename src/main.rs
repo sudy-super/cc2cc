@@ -23,7 +23,7 @@ enum Command {
         session_id: String,
         #[arg(long = "to", value_parser = ["claude", "clawcodex"])]
         target: String,
-        /// 複数の分岐がある場合の末端UUID
+        /// 変換する分岐の末端UUID (省略時は最も新しい分岐)
         #[arg(long)]
         leaf: Option<String>,
         #[arg(long)]

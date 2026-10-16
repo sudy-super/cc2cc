@@ -30,6 +30,8 @@ cc2cc convert SESSION_ID --to clawcodex
 cc2cc convert SESSION_ID --to claude
 ```
 
+会話が分岐している場合は、最後のメッセージが最も新しい分岐を使います。
+
 ## 注意点
 
 - 操作前に対象の会話を閉じてください。
