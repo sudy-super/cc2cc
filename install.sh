@@ -29,7 +29,7 @@ put_skill() {
 main() {
     version=${CC2CC_VERSION:-}
     if [ "$#" -gt 0 ]; then
-        [ "$#" -eq 2 ] && [ "$1" = '--version' ] || fail '使い方: sh install.sh [--version v0.1.0]'
+        [ "$#" -eq 2 ] && [ "$1" = '--version' ] || fail '使い方: sh install.sh [--version vX.Y.Z]'
         version=$2
     fi
     case "$(uname -s)/$(uname -m)" in

@@ -1,13 +1,17 @@
-Claude CodeとClawCodexの会話履歴を、セッションIDを指定して相互に変換します。
-元の作業ディレクトリに対応する履歴へ、新しいIDで登録します。
+`cc2cc list DIRECTORY` で、指定した作業ディレクトリの会話だけを表示できるようになりました。
+引数を省略すると全件を表示します。
 
-配布対象はApple Silicon Macとx86_64 Linuxです。
-Linux版はmuslで静的リンクしています。
-各アーカイブに本体、MITライセンス、第三者ライセンスの表示、両ツール用スキルを含みます。
+```sh
+cc2cc list .
+cc2cc list /hoge/fuga --from claude
+```
+
+相対パスも使えます。
+子ディレクトリの会話は含みません。
+
+Apple Silicon Macとx86_64 Linuxのバイナリを配布しています。
+次のコマンドで本体と両ツール用のスキルを更新できます。
 
 ```sh
 curl -fsSL https://github.com/sudy-super/cc2cc/releases/latest/download/install.sh | sh
 ```
-
-元の履歴は変更しません。
-実行中のツールやエージェント、認証情報、作業ファイルは移行しません。

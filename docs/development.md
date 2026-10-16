@@ -18,6 +18,8 @@ ClawCodex本体での確認には `scripts/verify_claw_native.py --help` を参�
 
 # リリース
 
+0.xの間は、機能の追加や使い方が変わる更新では2番目の数字を、不具合や文書の修正では3番目の数字を上げます。
+
 Cargo.tomlのバージョンと一致する `vX.Y.Z` タグをpushすると、GitHub Actionsが両OSでテストとビルドを行います。
 両方が成功した後に、アーカイブ、SHA-256の一覧、install.shをGitHub Releasesへ公開します。
 Macは `aarch64-apple-darwin`、Linuxは静的リンクの `x86_64-unknown-linux-musl` です。
